@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
@@ -36,11 +37,18 @@ app = FastAPI(
     version="5.0.0"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # -- USDA API config --
-USDA_API_KEY  = "DEMO_KEY"   # free, no signup needed
+USDA_API_KEY  = "DEMO_KEY"
 USDA_BASE_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
 
-# -- Food map: condition -> list of foods to fetch from USDA --
 CONDITION_FOODS = {
     "Iron_Deficiency": ["spinach", "lentils", "jaggery"],
     "Thalassemia":     ["spinach", "beetroot", "fenugreek"],
@@ -60,26 +68,21 @@ CONDITION_FOODS = {
     "Other_Anemia":    ["spinach", "lentils", "eggs"],
 }
 
-# -- Key nutrients to extract from USDA response --
 KEY_NUTRIENTS = {
-    "Iron, Fe":                  "Iron (mg)",
-    "Folate, total":             "Folate (µg)",
+    "Iron, Fe":                       "Iron (mg)",
+    "Folate, total":                  "Folate (ug)",
     "Vitamin C, total ascorbic acid": "Vitamin C (mg)",
-    "Calcium, Ca":               "Calcium (mg)",
-    "Protein":                   "Protein (g)",
-    "Energy":                    "Energy (kcal)",
-    "Vitamin A, IU":             "Vitamin A (IU)",
-    "Fiber, total dietary":      "Fiber (g)",
-    "Potassium, K":              "Potassium (mg)",
-    "Vitamin D (D2 + D3)":       "Vitamin D (µg)",
+    "Calcium, Ca":                    "Calcium (mg)",
+    "Protein":                        "Protein (g)",
+    "Energy":                         "Energy (kcal)",
+    "Vitamin A, IU":                  "Vitamin A (IU)",
+    "Fiber, total dietary":           "Fiber (g)",
+    "Potassium, K":                   "Potassium (mg)",
+    "Vitamin D (D2 + D3)":            "Vitamin D (ug)",
 }
 
 
 def fetch_usda_nutrition(food_name: str) -> dict:
-    """
-    Calls USDA FoodData Central API for a food item.
-    Returns name + key nutrients.
-    """
     try:
         response = httpx.get(
             USDA_BASE_URL,
@@ -87,20 +90,16 @@ def fetch_usda_nutrition(food_name: str) -> dict:
                 "query":    food_name,
                 "api_key":  USDA_API_KEY,
                 "pageSize": 1,
-                "dataType": "Foundation,SR Legacy",  # most accurate USDA data
+                "dataType": "Foundation,SR Legacy",
             },
             timeout=5.0
         )
         data = response.json()
-
         if not data.get("foods"):
             return {"food": food_name, "note": "Not found in USDA database"}
-
         food     = data["foods"][0]
         name     = food.get("description", food_name).title()
         raw_nutr = food.get("foodNutrients", [])
-
-        # Extract only the nutrients we care about
         nutrients = {}
         for n in raw_nutr:
             nutrient_name = n.get("nutrientName", "")
@@ -109,28 +108,14 @@ def fetch_usda_nutrition(food_name: str) -> dict:
                 value = n.get("value", 0)
                 unit  = n.get("unitName", "")
                 nutrients[label] = f"{value} {unit}"
-
-        return {
-            "food":         name,
-            "usda_source":  "USDA FoodData Central",
-            "nutrients":    nutrients,
-        }
-
+        return {"food": name, "usda_source": "USDA FoodData Central", "nutrients": nutrients}
     except Exception as e:
         return {"food": food_name, "error": str(e)}
 
 
 def get_nutrition_for_condition(condition_key: str) -> list:
-    """
-    Fetches USDA nutrition data for all foods
-    mapped to a given condition.
-    """
-    foods   = CONDITION_FOODS.get(condition_key, [])
-    results = []
-    for food in foods:
-        nutrition = fetch_usda_nutrition(food)
-        results.append(nutrition)
-    return results
+    foods = CONDITION_FOODS.get(condition_key, [])
+    return [fetch_usda_nutrition(food) for food in foods]
 
 
 # ================================================================
@@ -138,7 +123,6 @@ def get_nutrition_for_condition(condition_key: str) -> list:
 # ================================================================
 
 HINDI = {
-    # Exercise
     "Moderate walking 30 min/day":
         "roz 30 minute aram se tahlen - subah ya shaam ko",
     "FULL REST - No physical activity":
@@ -151,8 +135,6 @@ HINDI = {
         "roz 40 minute tez chaal se chalen - sans thodi foole par baat kar saken",
     "Light activity only - avoid dehydration":
         "halki gatividhi karen - paani khoob pien, sharir ko sookhne na den",
-
-    # Meal
     "Balanced diet with whole grains and vegetables":
         "saabut anaaj aur sabziyon se bhara santulit khaana khaen",
     "Iron-rich: spinach, lentils, jaggery + Vitamin C (lemon juice)":
@@ -179,8 +161,6 @@ HINDI = {
         "cheeni aur maida kam karen. Roz 20 minute dhoop len",
     "Balanced diet with whole grains and vegetables + Vitamin D: sunlight 20 min/day, eggs, fortified milk.":
         "saabut anaaj aur sabziyan khaen. Roz 20 minute dhoop len",
-
-    # Environment
     "Normal home rest":
         "ghar par aram karen - koi chinta nahin",
     "Go to emergency care immediately":
@@ -197,8 +177,6 @@ HINDI = {
         "dhool aur pradushan se door rahen - gehri saans ki kasrat karen",
     "Stay hydrated. Avoid high altitude.":
         "khoob paani pien - pahadi jagahon par jaane se bachen",
-
-    # Warnings
     "WARNING: Leukemia signal detected - consult a hematologist immediately.":
         "CHETAN: khoon ke cancer ka sanket - turant khoon ke doctor se milen",
     "WARNING: Sepsis risk - emergency care needed.":
@@ -242,7 +220,6 @@ def build_layer1_input(data: dict) -> pd.DataFrame:
     rbc     = data.get("rbc") or 5.0
     mentzer = mcv / (rbc + 0.001)
     gender  = 1 if str(data.get("gender", "")).lower() == "male" else 0
-
     row = {
         "leukocytes":    data.get("wbc", 7.0),
         "neutrophilsP":  neutro,
@@ -269,12 +246,10 @@ def build_layer2_input(data: dict) -> pd.DataFrame:
     mcv     = data.get("mcv") or 85.0
     rbc     = data.get("rbc") or 5.0
     mentzer = mcv / (rbc + 0.001)
-
     if gender == 0:
         threshold = 11.5 if age > 50 else 12.0
     else:
         threshold = 12.0 if age < 18 else 13.0
-
     row = {
         "age":          age,
         "gender":       gender,
@@ -316,23 +291,18 @@ def generate_prescription(l1: dict, l2: dict, l3: dict) -> dict:
     environment = "Normal home rest"
     warnings    = []
 
-    # Critical alerts first
     if l3.get("leukemia"):
         warnings.append("WARNING: Leukemia signal detected - consult a hematologist immediately.")
         exercise    = "FULL REST - No physical activity"
         environment = "Urgent: visit a hematologist or oncologist"
-
     if l3.get("sepsis"):
         warnings.append("WARNING: Sepsis risk - emergency care needed.")
         exercise    = "FULL REST - No physical activity"
         environment = "Go to emergency care immediately"
-
     if l3.get("cardiac"):
         warnings.append("WARNING: Cardiac strain detected - avoid exertion.")
         exercise    = "Light rest only - no gym or running"
         environment = "Monitor heart rate. Avoid physical stress."
-
-    # Infection
     if l1["infection_detected"]:
         if l1["risk_level"] == "High":
             exercise    = "FULL REST - No physical activity"
@@ -341,8 +311,6 @@ def generate_prescription(l1: dict, l2: dict, l3: dict) -> dict:
             exercise    = "Rest - no gym or running"
             meal        = "Anti-inflammatory: turmeric, ginger, citrus, warm fluids"
             environment = "Cool quiet room. Stay hydrated."
-
-    # Anemia
     if l2["anemia_type"] == "Iron_Deficiency":
         meal = "Iron-rich: spinach, lentils, jaggery + Vitamin C (lemon juice)"
     elif l2["anemia_type"] == "Thalassemia":
@@ -350,79 +318,52 @@ def generate_prescription(l1: dict, l2: dict, l3: dict) -> dict:
         warnings.append("INFO: Thalassemia trait detected - do NOT self-medicate with iron.")
     elif l2["anemia_type"] == "B12_Deficiency":
         meal = "B12 sources: eggs, dairy, meat. Consider B12 supplement."
-
-    # Organ specific
     if l3.get("metabolic"):
         exercise = "Zone 2 Cardio - 40 min brisk walking daily"
         meal     = "Low glycemic diet: reduce sugar, white rice, maida"
         warnings.append("INFO: Pre-diabetes / metabolic syndrome pattern detected.")
-
     if l3.get("liver"):
         meal = "Avoid alcohol. Light diet: fruits, vegetables, avoid fatty foods."
         warnings.append("INFO: Liver stress signal - avoid hepatotoxic substances.")
-
     if l3.get("thyroid"):
         meal = "Iodine-rich foods: fish, dairy, iodized salt. Get TSH test."
         warnings.append("INFO: Hypothyroid signal - get thyroid function test (TSH).")
-
     if l3.get("polycythemia"):
         exercise    = "Light activity only - avoid dehydration"
         environment = "Stay hydrated. Avoid high altitude."
         warnings.append("WARNING: High RBC count - blood clot risk. Consult a doctor.")
-
     if l3.get("autoimmune"):
         warnings.append("INFO: Autoimmune signal - consider ANA / RA factor blood test.")
-
     if l3.get("respiratory"):
         environment = "Avoid dusty/polluted environments. Deep breathing exercises."
         warnings.append("INFO: Respiratory fatigue pattern - check oxygen saturation.")
-
     if l3.get("vitd"):
         meal = meal + " + Vitamin D: sunlight 20 min/day, eggs, fortified milk."
         warnings.append("INFO: Low Vitamin D signal - consider Vit D3 supplement.")
-
     if l3.get("kidney"):
         warnings.append("INFO: Kidney stress signal - stay hydrated. Get creatinine test.")
 
     return {
-        "exercise_plan": {
-            "english": exercise,
-            "hindi":   translate(exercise)
-        },
-        "meal_plan": {
-            "english": meal,
-            "hindi":   translate(meal)
-        },
-        "environment_plan": {
-            "english": environment,
-            "hindi":   translate(environment)
-        },
-        "warnings": [
-            {"english": w, "hindi": translate(w)}
-            for w in warnings
-        ],
+        "exercise_plan":    {"english": exercise,    "hindi": translate(exercise)},
+        "meal_plan":        {"english": meal,         "hindi": translate(meal)},
+        "environment_plan": {"english": environment,  "hindi": translate(environment)},
+        "warnings":         [{"english": w, "hindi": translate(w)} for w in warnings],
     }
 
 
 def get_active_condition_key(l1: dict, l2: dict, l3: dict) -> str:
-    """
-    Returns the single most important condition key
-    to fetch USDA nutrition data for.
-    Priority: leukemia > sepsis > cardiac > anemia > organ > normal
-    """
-    if l3.get("leukemia"):    return "leukemia"
-    if l3.get("sepsis"):      return "sepsis"
-    if l3.get("cardiac"):     return "cardiac"
-    if l2["anemia_type"] != "Normal":
-        return l2["anemia_type"]
-    if l3.get("metabolic"):   return "metabolic"
-    if l3.get("kidney"):      return "kidney"
-    if l3.get("liver"):       return "liver"
-    if l3.get("thyroid"):     return "thyroid"
-    if l3.get("vitd"):        return "vitd"
-    if l3.get("respiratory"): return "respiratory"
-    if l3.get("autoimmune"):  return "autoimmune"
-    if l3.get("polycythemia"):return "polycythemia"
+    if l3.get("leukemia"):     return "leukemia"
+    if l3.get("sepsis"):       return "sepsis"
+    if l3.get("cardiac"):      return "cardiac"
+    if l2["anemia_type"] != "Normal": return l2["anemia_type"]
+    if l3.get("metabolic"):    return "metabolic"
+    if l3.get("kidney"):       return "kidney"
+    if l3.get("liver"):        return "liver"
+    if l3.get("thyroid"):      return "thyroid"
+    if l3.get("vitd"):         return "vitd"
+    if l3.get("respiratory"):  return "respiratory"
+    if l3.get("autoimmune"):   return "autoimmune"
+    if l3.get("polycythemia"): return "polycythemia"
     return "Normal"
 
 
@@ -453,15 +394,15 @@ class CBCReport(BaseModel):
 @app.get("/")
 def root():
     return {
-        "status":      "CDSS API is live",
-        "lab":         "SymbiansLab",
-        "founder":     "Sudnyesh Nehare",
-        "version":     "5.0.0",
-        "layers":      3,
-        "conditions":  11,
-        "languages":   ["english", "hindi"],
-        "nutrition":   "Live USDA FoodData Central",
-        "models":      "Layer1(RandomForest) + Layer2(DecisionTree) + Layer3(LogisticRegression x11)"
+        "status":     "CDSS API is live",
+        "lab":        "SymbiansLab",
+        "founder":    "Sudnyesh Nehare",
+        "version":    "5.0.0",
+        "layers":     3,
+        "conditions": 11,
+        "languages":  ["english", "hindi"],
+        "nutrition":  "Live USDA FoodData Central",
+        "models":     "Layer1(RandomForest) + Layer2(DecisionTree) + Layer3(LogisticRegression x11)"
     }
 
 
@@ -470,7 +411,6 @@ def analyze(report: CBCReport):
     try:
         data = report.model_dump()
 
-        # Layer 1: Infection
         l1_input = build_layer1_input(data)
         l1_pred  = l1_model.predict(l1_input)[0]
         l1_proba = l1_model.predict_proba(l1_input)[0]
@@ -496,7 +436,6 @@ def analyze(report: CBCReport):
             "model_confidence":   f"{l1_conf}%",
         }
 
-        # Layer 2: Anemia
         l2_input = build_layer2_input(data)
         l2_pred  = l2_model.predict(l2_input)[0]
         l2_proba = l2_model.predict_proba(l2_input)[0]
@@ -508,10 +447,8 @@ def analyze(report: CBCReport):
             "model_confidence": f"{l2_conf}%",
         }
 
-        # Layer 3: 11 organs
         l3_input  = build_layer3_input(data, nlr)
         l3_scaled = l3_scaler.transform(l3_input)
-
         layer3        = {}
         active_alerts = []
 
@@ -525,18 +462,12 @@ def analyze(report: CBCReport):
         layer3["active_alerts"] = active_alerts
         layer3["alert_count"]   = len(active_alerts)
 
-        # Prescription
-        prescription = generate_prescription(layer1, layer2, layer3)
-
-        # USDA Nutrition - fetch for most critical condition
+        prescription  = generate_prescription(layer1, layer2, layer3)
         condition_key = get_active_condition_key(layer1, layer2, layer3)
         usda_foods    = get_nutrition_for_condition(condition_key)
 
         return {
-            "patient_profile": {
-                "age":    data["age"],
-                "gender": data["gender"]
-            },
+            "patient_profile":        {"age": data["age"], "gender": data["gender"]},
             "layer1_infection":       layer1,
             "layer2_anemia":          layer2,
             "layer3_organ_stress":    layer3,
